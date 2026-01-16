@@ -12,7 +12,7 @@ from pathlib import Path
 # =============================================================================
 
 def password_gate():
-    if "APP_PASSWORD" not in st.sec1rets:
+    if "APP_PASSWORD" not in st.secrets:
         return
 
     if "authed" not in st.session_state:

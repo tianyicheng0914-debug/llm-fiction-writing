@@ -140,35 +140,10 @@ def render_sidebar():
         )
         model_id = AVAILABLE_MODELS[model_name]
 
-        st.divider()
-
-        # System Prompts
-        st.subheader("System Prompts")
-
-        todo_prompt = st.text_area(
-            "To-Do List Generator Prompt",
-            value=st.session_state.get("todo_prompt", DEFAULT_TODO_PROMPT),
-            height=200,
-            key="todo_prompt_input",
-            placeholder="Optional system prompt for to-do list generation..."
-        )
-
-        story_prompt = st.text_area(
-            "Story Decoder Prompt",
-            value=st.session_state.get("story_prompt", DEFAULT_STORY_PROMPT),
-            height=200,
-            key="story_prompt_input",
-            placeholder="Optional system prompt for story generation..."
-        )
-
-        # Update session state
-        st.session_state.todo_prompt = todo_prompt
-        st.session_state.story_prompt = story_prompt
-
-        return api_key, model_id, todo_prompt, story_prompt
+        return api_key, model_id
 
 
-def render_main_interface(api_key: str, model_id: str, todo_prompt: str, story_prompt: str):
+def render_main_interface(api_key: str, model_id: str):
     """Render the main interface with the two-stage pipeline."""
 
     # Initialize session state
@@ -181,7 +156,15 @@ def render_main_interface(api_key: str, model_id: str, todo_prompt: str, story_p
 
     # Stage 1: To-Do List Generation
     st.header("Stage 1: To-Do List Generator")
-    st.caption("Enter your story idea to generate a structured outline")
+
+    todo_prompt = st.text_area(
+        "System Prompt",
+        value=st.session_state.get("todo_prompt", DEFAULT_TODO_PROMPT),
+        height=100,
+        key="todo_prompt_input",
+        placeholder="System prompt for to-do list generation..."
+    )
+    st.session_state.todo_prompt = todo_prompt
 
     user_query = st.text_area(
         "User Query",
@@ -216,9 +199,17 @@ def render_main_interface(api_key: str, model_id: str, todo_prompt: str, story_p
 
     st.divider()
 
-    # Editable To-Do List
+    # Stage 2: Story Decoder
     st.header("Stage 2: Story Decoder")
-    st.caption("Edit the to-do list if needed, then generate the full story")
+
+    story_prompt = st.text_area(
+        "System Prompt",
+        value=st.session_state.get("story_prompt", DEFAULT_STORY_PROMPT),
+        height=100,
+        key="story_prompt_input",
+        placeholder="System prompt for story generation..."
+    )
+    st.session_state.story_prompt = story_prompt
 
     # Initialize edited_todo_list from todo_list if not set
     if "edited_todo_list" not in st.session_state:
@@ -280,12 +271,12 @@ def main():
     st.title("Story Engine")
     st.caption("A two-stage fiction generation pipeline")
 
-    api_key, model_id, todo_prompt, story_prompt = render_sidebar()
+    api_key, model_id = render_sidebar()
 
     if not api_key:
         st.warning("Enter an OpenRouter API key in the sidebar to enable generation.")
 
-    render_main_interface(api_key, model_id, todo_prompt, story_prompt)
+    render_main_interface(api_key, model_id)
 
 
 if __name__ == "__main__":

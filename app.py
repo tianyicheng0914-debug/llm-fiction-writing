@@ -1,5 +1,5 @@
 """
-Story Engine - A two-stage fiction generation pipeline using Streamlit and OpenRouter.
+Story Engine - A fiction generation pipeline using Streamlit and OpenRouter.
 """
 
 import streamlit as st
@@ -21,7 +21,7 @@ def password_gate():
     if st.session_state.authed:
         return
 
-    st.title("🔒 Protected App")
+    st.title("Protected App")
     pw = st.text_input("Enter password", type="password")
 
     c1, c2 = st.columns([1, 1])
@@ -51,9 +51,17 @@ AVAILABLE_MODELS = {
     "Claude 3 Opus": "anthropic/claude-3-opus",
 }
 
-DEFAULT_TODO_PROMPT = "Create a 5-point to-do list of the most important structural beats needed to tell this story"
+DEFAULT_STEP0_SYSTEM = "You are a story structure analyst."
 
-DEFAULT_STORY_PROMPT = "Write a 20-sentence story based on the to-do list."
+DEFAULT_STEP0_USER = "Create a 5-point to-do list of the most important structural beats for the story: The Ones Who Walk Away from Omelas"
+
+DEFAULT_STEP1_SYSTEM = "Create a to-do list of the most important structural beats needed to tell this story."
+
+DEFAULT_STEP1_USER = ""
+
+DEFAULT_STEP2_SYSTEM = "Write a story based on the to-do list provided."
+
+DEFAULT_STEP2_USER = ""
 
 
 # =============================================================================
@@ -68,15 +76,31 @@ def get_client(api_key: str) -> OpenAI:
     )
 
 
-def call_llm(client: OpenAI, model: str, system_prompt: str, user_message: str) -> str:
-    """Make a completion request to the LLM."""
+def call_llm(client: OpenAI, model: str, system_prompt: str, user_message: str,
+              previous_context: list = None) -> str:
+    """Make a completion request to the LLM.
+
+    Args:
+        previous_context: List of previous step interactions, each containing
+                         {'system': str, 'user': str, 'assistant': str}
+    """
     try:
+        messages = [{"role": "system", "content": system_prompt}]
+
+        # Add previous context as conversation history
+        if previous_context:
+            for ctx in previous_context:
+                if ctx.get('user'):
+                    messages.append({"role": "user", "content": ctx['user']})
+                if ctx.get('assistant'):
+                    messages.append({"role": "assistant", "content": ctx['assistant']})
+
+        # Add current user message
+        messages.append({"role": "user", "content": user_message})
+
         response = client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
+            messages=messages,
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -84,73 +108,89 @@ def call_llm(client: OpenAI, model: str, system_prompt: str, user_message: str) 
 
 
 # =============================================================================
-# Pipeline Stages
-# =============================================================================
-
-def generate_todo_list(client: OpenAI, model: str, system_prompt: str, user_query: str) -> str:
-    """Stage 1: Generate a structured to-do list from user query."""
-    return call_llm(client, model, system_prompt, user_query)
-
-
-def generate_story(client: OpenAI, model: str, system_prompt: str, todo_list: str, user_guidance: str) -> str:
-    """Stage 2: Expand to-do list into full story."""
-    if user_guidance:
-        combined_input = f"{todo_list}\n\n{user_guidance}"
-    else:
-        combined_input = todo_list
-    return call_llm(client, model, system_prompt, combined_input)
-
-
-# =============================================================================
-# Persistence
-# =============================================================================
-
-def save_session(query: str, todo_prompt: str, story_prompt: str, todo_list: str, story: str) -> str:
-    """Save the current session to a timestamped Markdown file."""
-    outputs_dir = Path("outputs")
-    outputs_dir.mkdir(exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = outputs_dir / f"story_session_{timestamp}.md"
-
-    content = f"""# Story Engine Session
-Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-
----
-
-## Original Query
-{query}
-
----
-
-## To-Do List System Prompt
-```
-{todo_prompt}
-```
-
-## Story System Prompt
-```
-{story_prompt}
-```
-
----
-
-## Generated To-Do List
-{todo_list}
-
----
-
-## Final Story
-{story}
-"""
-
-    filename.write_text(content)
-    return str(filename)
-
-
-# =============================================================================
 # UI Components
 # =============================================================================
+
+def init_edit_state(key: str, default_value: str):
+    """Initialize edit state for a text field."""
+    if f"{key}_value" not in st.session_state:
+        st.session_state[f"{key}_value"] = default_value
+    if f"{key}_editing" not in st.session_state:
+        st.session_state[f"{key}_editing"] = True
+
+
+def render_editable_field(label: str, key: str, height: int = 100):
+    """Render a text field with Edit/Done buttons."""
+    editing = st.session_state.get(f"{key}_editing", False)
+
+    col1, col2 = st.columns([6, 1])
+    with col1:
+        st.markdown(f"**{label}**")
+    with col2:
+        if editing:
+            if st.button("Done", key=f"{key}_done_btn", type="primary"):
+                st.session_state[f"{key}_editing"] = False
+                st.rerun()
+        else:
+            if st.button("Edit", key=f"{key}_edit_btn"):
+                st.session_state[f"{key}_editing"] = True
+                st.rerun()
+
+    value = st.text_area(
+        label,
+        value=st.session_state.get(f"{key}_value", ""),
+        height=height,
+        key=f"{key}_input",
+        disabled=not editing,
+        label_visibility="collapsed"
+    )
+
+    if editing:
+        st.session_state[f"{key}_value"] = value
+
+    return st.session_state.get(f"{key}_value", "")
+
+
+def export_prompt(step_num: int, system: str, user: str, step_title: str, include_previous: bool):
+    """Generate export content for a step's prompts, optionally including previous steps."""
+    lines = [f"Step {step_num}: {step_title} - Exported Prompts"]
+    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("")
+
+    # Include previous steps if enabled
+    if include_previous and step_num > 0:
+        lines.append("=" * 50)
+        lines.append("PREVIOUS STEPS (included as context)")
+        lines.append("=" * 50)
+        lines.append("")
+
+        for i in range(step_num):
+            step_system = st.session_state.get(f"step{i}_system_value", "")
+            step_user = st.session_state.get(f"step{i}_user_value", "")
+            step_output = st.session_state.get(f"step{i}_output", "")
+
+            lines.append(f"--- Step {i} ---")
+            lines.append(f"System Prompt: {step_system}")
+            lines.append("")
+            lines.append(f"User Prompt: {step_user}")
+            lines.append("")
+            lines.append(f"Output: {step_output}")
+            lines.append("")
+
+        lines.append("=" * 50)
+        lines.append("CURRENT STEP")
+        lines.append("=" * 50)
+        lines.append("")
+
+    lines.append(f"System Prompt:")
+    lines.append(system)
+    lines.append("")
+    lines.append(f"User Prompt:")
+    lines.append(user)
+    lines.append("")
+
+    return "\n".join(lines)
+
 
 def render_sidebar():
     """Render the sidebar with configuration options."""
@@ -177,118 +217,205 @@ def render_sidebar():
         return api_key, model_id
 
 
-def render_main_interface(api_key: str, model_id: str):
-    """Render the main interface with the two-stage pipeline."""
+def get_step_context(step_num: int) -> list:
+    """Get the context from previous steps."""
+    context = []
+    for i in range(step_num):
+        user_val = st.session_state.get(f"step{i}_user_value", "")
+        output_val = st.session_state.get(f"step{i}_output", "")
+        if user_val or output_val:
+            context.append({
+                'user': user_val,
+                'assistant': output_val
+            })
+    return context
 
-    # Initialize session state
-    if "todo_list" not in st.session_state:
-        st.session_state.todo_list = ""
-    if "story" not in st.session_state:
-        st.session_state.story = ""
-    if "original_query" not in st.session_state:
-        st.session_state.original_query = ""
 
-    # Stage 1: To-Do List Generation
-    st.header("Stage 1: To-Do List Generator")
+def render_step(step_num: int, step_title: str, system_key: str, user_key: str,
+                default_system: str, default_user: str, api_key: str, model_id: str,
+                output_key: str, button_label: str):
+    """Render a single step with system/user prompts and generate button."""
 
-    todo_prompt = st.text_area(
-        "System Prompt",
-        value=st.session_state.get("todo_prompt", DEFAULT_TODO_PROMPT),
-        height=100,
-        key="todo_prompt_input",
-        placeholder="System prompt for to-do list generation..."
-    )
-    st.session_state.todo_prompt = todo_prompt
+    st.header(f"Step {step_num}: {step_title}")
 
-    user_query = st.text_area(
-        "User Query",
-        placeholder="Story idea, premise, characters, instructions for the model, or any other input...",
-        height=100,
-        key="user_query"
-    )
+    # Initialize states
+    init_edit_state(system_key, default_system)
+    init_edit_state(user_key, default_user)
 
-    stage1_guidance = st.text_area(
-        "Additional Guidance",
-        placeholder="Extra instructions, constraints, formatting preferences...",
-        height=100,
-        key="stage1_guidance"
-    )
+    # System prompt
+    system_prompt = render_editable_field("System Prompt", system_key, height=100)
 
-    generate_todo_btn = st.button("Generate To-Do List", type="primary", disabled=not api_key)
+    # User prompt
+    user_prompt = render_editable_field("User Prompt", user_key, height=150)
 
-    if generate_todo_btn and user_query:
-        st.session_state.original_query = user_query
-        with st.spinner("Generating To-Do List..."):
+    # Include previous steps checkbox (for steps 1 and 2)
+    include_previous = False
+    if step_num > 0:
+        if step_num == 1:
+            checkbox_label = "Build on Step 0"
+            help_text = "Include Step 0's conversation as context"
+        else:
+            checkbox_label = "Build on previous steps"
+            help_text = "Include all previous steps' conversations as context"
+        include_previous = st.checkbox(checkbox_label, key=f"step{step_num}_include_prev", help=help_text)
+
+    # Buttons row
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        generate_btn = st.button(button_label, type="primary", disabled=not api_key, key=f"step{step_num}_generate")
+    with col2:
+        export_content = export_prompt(step_num, system_prompt, user_prompt, step_title, include_previous)
+        st.download_button(
+            "Export Prompts",
+            data=export_content,
+            file_name=f"step{step_num}_prompts.txt",
+            mime="text/plain",
+            key=f"step{step_num}_export"
+        )
+
+    # Generate output
+    if generate_btn and user_prompt:
+        with st.spinner(f"Generating..."):
             client = get_client(api_key)
-            # Combine user query and guidance if provided
-            if stage1_guidance:
-                combined_query = f"{user_query}\n\n{stage1_guidance}"
-            else:
-                combined_query = user_query
-            result = generate_todo_list(client, model_id, todo_prompt, combined_query)
-            st.session_state.todo_list = result
-            # Force the edited field to sync by setting it in session state
-            st.session_state.edited_todo_list = result
+            # Get previous context if checkbox is enabled
+            previous_context = get_step_context(step_num) if include_previous else None
+            result = call_llm(client, model_id, system_prompt, user_prompt, previous_context)
+            st.session_state[output_key] = result
             st.rerun()
+
+    # Display output
+    if st.session_state.get(output_key):
+        st.markdown("**Output:**")
+        if step_num == 2:
+            # Step 2 (story) uses markdown for natural line breaks
+            st.markdown(st.session_state[output_key])
+            with st.expander("Copy text"):
+                st.code(st.session_state[output_key], language=None)
+        else:
+            # Steps 0-1 use code block with built-in copy button
+            st.code(st.session_state[output_key], language=None)
+
+    return st.session_state.get(output_key, "")
+
+
+def render_main_interface(api_key: str, model_id: str):
+    """Render the main interface with the pipeline steps."""
+
+    # Initialize output states
+    if "step0_output" not in st.session_state:
+        st.session_state.step0_output = ""
+    if "step1_output" not in st.session_state:
+        st.session_state.step1_output = ""
+    if "step2_output" not in st.session_state:
+        st.session_state.step2_output = ""
+
+    # Step 0: Template
+    render_step(
+        step_num=0,
+        step_title="Template",
+        system_key="step0_system",
+        user_key="step0_user",
+        default_system=DEFAULT_STEP0_SYSTEM,
+        default_user=DEFAULT_STEP0_USER,
+        api_key=api_key,
+        model_id=model_id,
+        output_key="step0_output",
+        button_label="Generate Template"
+    )
 
     st.divider()
 
-    # Stage 2: Story Decoder
-    st.header("Stage 2: Story Decoder")
-
-    story_prompt = st.text_area(
-        "System Prompt",
-        value=st.session_state.get("story_prompt", DEFAULT_STORY_PROMPT),
-        height=100,
-        key="story_prompt_input",
-        placeholder="System prompt for story generation..."
-    )
-    st.session_state.story_prompt = story_prompt
-
-    # Initialize edited_todo_list from todo_list if not set
-    if "edited_todo_list" not in st.session_state:
-        st.session_state.edited_todo_list = st.session_state.todo_list
-
-    edited_todo_list = st.text_area(
-        "To-Do List (editable)",
-        height=300,
-        key="edited_todo_list",
-        placeholder="Generated to-do list will appear here. You can also write or paste your own..."
+    # Step 1: To-Do List Generation
+    render_step(
+        step_num=1,
+        step_title="To-Do List Generator",
+        system_key="step1_system",
+        user_key="step1_user",
+        default_system=DEFAULT_STEP1_SYSTEM,
+        default_user=DEFAULT_STEP1_USER,
+        api_key=api_key,
+        model_id=model_id,
+        output_key="step1_output",
+        button_label="Generate To-Do List"
     )
 
-    story_guidance = st.text_area(
-        "Additional Guidance",
-        placeholder="Add style preferences, tone, POV, or other instructions...",
-        height=100,
-        key="story_guidance"
+    st.divider()
+
+    # Step 2: Story Decoder
+    render_step(
+        step_num=2,
+        step_title="Story Decoder",
+        system_key="step2_system",
+        user_key="step2_user",
+        default_system=DEFAULT_STEP2_SYSTEM,
+        default_user=DEFAULT_STEP2_USER,
+        api_key=api_key,
+        model_id=model_id,
+        output_key="step2_output",
+        button_label="Generate Story"
     )
 
-    generate_story_btn = st.button("Generate Story", type="primary", disabled=not api_key)
-
-    if generate_story_btn and edited_todo_list:
-        with st.spinner("Generating Story..."):
-            client = get_client(api_key)
-            st.session_state.story = generate_story(
-                client, model_id, story_prompt, edited_todo_list, story_guidance
-            )
-
-    # Display Story
-    if st.session_state.story:
+    # Save full session
+    if st.session_state.get("step2_output"):
         st.divider()
-        st.header("Generated Story")
-        st.markdown(st.session_state.story)
-
-        # Save Session
-        st.divider()
-        if st.button("Save Session"):
-            filepath = save_session(
-                st.session_state.original_query or user_query,
-                todo_prompt,
-                story_prompt,
-                edited_todo_list,
-                st.session_state.story
-            )
+        if st.button("Save Full Session"):
+            filepath = save_session()
             st.success(f"Session saved to: {filepath}")
+
+
+def save_session() -> str:
+    """Save the current session to a timestamped Markdown file."""
+    outputs_dir = Path("outputs")
+    outputs_dir.mkdir(exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = outputs_dir / f"story_session_{timestamp}.md"
+
+    content = f"""# Story Engine Session
+Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+---
+
+## Step 0: Template Generation
+
+### System Prompt
+{st.session_state.get("step0_system_value", "")}
+
+### User Prompt
+{st.session_state.get("step0_user_value", "")}
+
+### Output
+{st.session_state.get("step0_output", "")}
+
+---
+
+## Step 1: To-Do List Generator
+
+### System Prompt
+{st.session_state.get("step1_system_value", "")}
+
+### User Prompt
+{st.session_state.get("step1_user_value", "")}
+
+### Output
+{st.session_state.get("step1_output", "")}
+
+---
+
+## Step 2: Story Decoder
+
+### System Prompt
+{st.session_state.get("step2_system_value", "")}
+
+### User Prompt
+{st.session_state.get("step2_user_value", "")}
+
+### Output
+{st.session_state.get("step2_output", "")}
+"""
+
+    filename.write_text(content)
+    return str(filename)
 
 
 # =============================================================================
@@ -298,11 +425,11 @@ def render_main_interface(api_key: str, model_id: str):
 def main():
     st.set_page_config(
         page_title="Story Engine",
-        page_icon="📖",
+        page_icon="",
         layout="wide"
     )
 
-    # Custom CSS for narrower sidebar (approximately 3:7 ratio)
+    # Custom CSS for narrower sidebar
     st.markdown(
         """
         <style>
@@ -316,7 +443,6 @@ def main():
     )
 
     st.title("Story Engine")
-    st.caption("A two-stage fiction generation pipeline")
 
     api_key, model_id = render_sidebar()
 

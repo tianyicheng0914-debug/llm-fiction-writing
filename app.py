@@ -221,13 +221,32 @@ def render_sidebar():
 
         # API Key
         st.subheader("API Key")
-        default_api_key = st.secrets.get("OPENROUTER_API_KEY", "") if "OPENROUTER_API_KEY" in st.secrets else ""
-        api_key = st.text_input(
-            "OpenRouter API Key",
-            value=default_api_key,
-            type="password",
-            placeholder="Enter your OpenRouter API key"
-        )
+        secret_api_key = st.secrets.get("OPENROUTER_API_KEY", "") if "OPENROUTER_API_KEY" in st.secrets else ""
+        
+        # If secret API key exists, show status and option to override
+        if secret_api_key:
+            st.success("✓ API Key configured (from secrets)")
+            use_manual = st.checkbox("Override with manual input", key="override_api_key")
+            
+            if use_manual:
+                manual_api_key = st.text_input(
+                    "OpenRouter API Key",
+                    value="",
+                    type="password",
+                    placeholder="Enter your OpenRouter API key",
+                    key="manual_api_key_input"
+                )
+                api_key = manual_api_key if manual_api_key else secret_api_key
+            else:
+                api_key = secret_api_key
+        else:
+            # No secret API key, show normal input
+            api_key = st.text_input(
+                "OpenRouter API Key",
+                value="",
+                type="password",
+                placeholder="Enter your OpenRouter API key"
+            )
 
         # Model Selection
         st.subheader("Model")
